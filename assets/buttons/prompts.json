@@ -1,0 +1,38 @@
+{
+  "tool": "Built-in image_gen",
+  "transparent_background": true,
+  "assets": [
+    {
+      "file": "button-1.png",
+      "prompt": "Use case: infographic-diagram. Asset type: one compact button-mapping illustration for a native macOS Kensington SlimBlade trackball settings app. Create a single top-down orthographic illustration of the wired SlimBlade: a low, rounded square graphite-black base, four large clearly separated quadrant button panels surrounding a glossy deep-red ball in the exact center, narrow subtle metallic silver outer rim. No cable. Elegant, restrained product illustration, crisp edges, high contrast, soft dimensional shading, designed to remain legible at 64×64 points. Highlight ONLY the bottom-left button panel in vivid cool blue; the top-left, top-right, and bottom-right panels must all remain neutral graphite gray. The highlighted button corresponds to button 1. No numbers, labels, text, arrows, hands, extra objects, shadows outside the silhouette, or background. Transparent background, centered square canvas, device occupies approximately 88% of canvas, all edges completely visible. The four quadrants and central ball must have symmetric geometry."
+    },
+    {
+      "file": "button-2.png",
+      "prompt": "Use case: precise-object-edit. Edit this button-mapping illustration to make a matching variant. Keep the exact same device silhouette, proportions, framing, silver rim, red central ball, camera, texture, neutral graphite panels, and transparent background. Change ONLY which button panels are blue. The new variant must highlight ONLY the bottom-right panel in the same vivid cool blue as the original. ALL remaining panels must be neutral graphite gray; remove the original bottom-left blue wherever it is not one of the specified selected panels. No numbers, text, labels, arrows, extra objects, or background. Preserve transparency and identical canvas composition."
+    },
+    {
+      "file": "button-3.png",
+      "prompt": "Use case: precise-object-edit. Edit this button-mapping illustration to make a matching variant. Keep the exact same device silhouette, proportions, framing, silver rim, red central ball, camera, texture, neutral graphite panels, and transparent background. Change ONLY which button panels are blue. The new variant must highlight ONLY the top-left panel in the same vivid cool blue as the original. ALL remaining panels must be neutral graphite gray; remove the original bottom-left blue wherever it is not one of the specified selected panels. No numbers, text, labels, arrows, extra objects, or background. Preserve transparency and identical canvas composition."
+    },
+    {
+      "file": "button-4.png",
+      "prompt": "Use case: precise-object-edit. Edit this button-mapping illustration to make a matching variant. Keep the exact same device silhouette, proportions, framing, silver rim, red central ball, camera, texture, neutral graphite panels, and transparent background. Change ONLY which button panels are blue. The new variant must highlight ONLY the top-right panel in the same vivid cool blue as the original. ALL remaining panels must be neutral graphite gray; remove the original bottom-left blue wherever it is not one of the specified selected panels. No numbers, text, labels, arrows, extra objects, or background. Preserve transparency and identical canvas composition."
+    },
+    {
+      "file": "pair-12.png",
+      "prompt": "Use case: precise-object-edit. Edit this button-mapping illustration to make a matching variant. Keep the exact same device silhouette, proportions, framing, silver rim, red central ball, camera, texture, neutral graphite panels, and transparent background. Change ONLY which button panels are blue. The new variant must highlight BOTH bottom panels (bottom-left AND bottom-right), and NO top panels in the same vivid cool blue as the original. ALL remaining panels must be neutral graphite gray; remove the original bottom-left blue wherever it is not one of the specified selected panels. No numbers, text, labels, arrows, extra objects, or background. Preserve transparency and identical canvas composition."
+    },
+    {
+      "file": "pair-34.png",
+      "prompt": "Use case: precise-object-edit. Edit this button-mapping illustration to make a matching variant. Keep the exact same device silhouette, proportions, framing, silver rim, red central ball, camera, texture, neutral graphite panels, and transparent background. Change ONLY which button panels are blue. The new variant must highlight BOTH top panels (top-left AND top-right), and NO bottom panels in the same vivid cool blue as the original. ALL remaining panels must be neutral graphite gray; remove the original bottom-left blue wherever it is not one of the specified selected panels. No numbers, text, labels, arrows, extra objects, or background. Preserve transparency and identical canvas composition."
+    },
+    {
+      "file": "pair-13.png",
+      "prompt": "Use case: precise-object-edit. Edit this button-mapping illustration to make a matching variant. Keep the exact same device silhouette, proportions, framing, silver rim, red central ball, camera, texture, neutral graphite panels, and transparent background. Change ONLY which button panels are blue. The new variant must highlight BOTH left panels (top-left AND bottom-left), and NO right panels in the same vivid cool blue as the original. ALL remaining panels must be neutral graphite gray; remove the original bottom-left blue wherever it is not one of the specified selected panels. No numbers, text, labels, arrows, extra objects, or background. Preserve transparency and identical canvas composition."
+    },
+    {
+      "file": "pair-24.png",
+      "prompt": "Use case: precise-object-edit. Edit this button-mapping illustration to make a matching variant. Keep the exact same device silhouette, proportions, framing, silver rim, red central ball, camera, texture, neutral graphite panels, and transparent background. Change ONLY which button panels are blue. The new variant must highlight BOTH right panels (top-right AND bottom-right), and NO left panels in the same vivid cool blue as the original. ALL remaining panels must be neutral graphite gray; remove the original bottom-left blue wherever it is not one of the specified selected panels. No numbers, text, labels, arrows, extra objects, or background. Preserve transparency and identical canvas composition."
+    }
+  ]
+}

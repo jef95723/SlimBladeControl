@@ -1,0 +1,14 @@
+[package]
+name = "slimblade_core"
+version = "0.3.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

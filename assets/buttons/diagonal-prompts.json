@@ -1,0 +1,14 @@
+{
+  "tool": "Built-in image_gen",
+  "transparent_background": true,
+  "assets": [
+    {
+      "file": "pair-14.png",
+      "prompt": "Use case: precise-object-edit. Create a matching diagonal-pair variant of the attached transparent SlimBlade button-mapping illustration. Preserve exactly the same device silhouette, proportions, framing, metallic rim, glossy red central ball, camera, graphite texture, and transparent background. Change ONLY which panels are blue. Highlight bottom-left AND top-right in the original vivid cool blue. Keep the OTHER TWO panels neutral graphite gray. This is a diagonal pair of opposite corners, NOT a whole side. No numbers, labels, arrows, extra objects, background, or cable. Same square composition and transparency."
+    },
+    {
+      "file": "pair-23.png",
+      "prompt": "Use case: precise-object-edit. Create a matching diagonal-pair variant of the attached transparent SlimBlade button-mapping illustration. Preserve exactly the same device silhouette, proportions, framing, metallic rim, glossy red central ball, camera, graphite texture, and transparent background. Change ONLY which panels are blue. Highlight bottom-right AND top-left in the original vivid cool blue. Keep the OTHER TWO panels neutral graphite gray. This is a diagonal pair of opposite corners, NOT a whole side. No numbers, labels, arrows, extra objects, background, or cable. Same square composition and transparency."
+    }
+  ]
+}
