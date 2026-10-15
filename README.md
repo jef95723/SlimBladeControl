@@ -1,10 +1,10 @@
-# SlimBlade Control 0.6.1
+# SlimBlade Control 0.6.2
 
 A native macOS utility for the older **wired Kensington SlimBlade**, USB **047d:2041**. Rust handles button combinations, report decoding, and motion scaling. Objective-C provides Cocoa settings, IOKit device access, and Core Graphics output. MIT licensed; no external Rust crates, networking, telemetry, privileged helper, or kernel extension.
 
 **Author: [Jeffrey Liu](https://github.com/jef95723)** · [MIT License](LICENSE)
 
-[Download the latest Apple Silicon app](https://github.com/jef95723/SlimBladeControl/releases/latest) · [Release notes](docs/releases/v0.6.1.md)
+[Download the latest Apple Silicon app](https://github.com/jef95723/SlimBladeControl/releases/latest) · [Release notes](docs/releases/v0.6.2.md)
 
 ## Start using it
 
@@ -18,9 +18,16 @@ A native macOS utility for the older **wired Kensington SlimBlade**, USB **047d:
 
 The menu bar shows a monochrome trackball, with a red center while connected. Turn off **App → Show icon in the menu bar** to hide it; this does not stop mappings. It stays out of the Dock by default. Enable **App → Show app in the Dock** if desired. You can always return through Applications or Spotlight, even with both icons hidden. Dock, menu bar, and startup options save immediately. Automatic startup is enabled by default and can be disabled in App. This starts mappings when the app opens; it does not add a login item. Running without a Dock icon uses the same app process and input permissions; it does not require a background helper or updater permission. Choose **App → Quit SlimBlade Control** to exit even when both icons are hidden.
 
-Sleep, session deactivation, and unplugging still pause the controller; click Start after returning. Saved settings remain local.
+Mappings automatically resume after USB reconnection, sleep/wake, lock/unlock, and user-session switching. Temporary interruptions show **Waiting**. Discovery normally reacts immediately, with a tolerant two-second retry if macOS is still restoring the device or input access. Recovery uses your last applied settings and leaves unfinished edits alone. **Pause** disables automatic recovery until you choose Start again; **Quit** exits completely. Reconnected clicks arm after all buttons are released, while movement and scrolling work immediately. Saved settings remain local.
 
 This local build is ad-hoc signed, **not notarized**. Rebuilding changes its signature; macOS may require removing and re-adding its privacy entries. Never run it as root or disable SIP.
+
+## Changes in 0.6.2
+
+- Keep mapping intent separate from the current HID connection. Unplugging releases held outputs and the device while discovery continues, so plugging the trackball back in resumes automatically.
+- Release capture during sleep, lock, or an inactive user session; resume after the session becomes available again. Overlapping interruptions must all clear before capture resumes.
+- Retry transient discovery/capture failures and restored input permissions while mappings remain enabled. Manual Pause and Quit cancel automatic recovery.
+- Preserve applied settings, discard stale callbacks, clear pending combinations and held modifiers on interruption, and require neutral buttons before rearming clicks.
 
 ## Changes in 0.6.1
 
@@ -97,7 +104,7 @@ Identical mapped actions share ownership: releasing one holder does not release 
 - Ball motion commits pending clicks immediately for dragging; incidental movement between presses can prevent a combination.
 - Complete USB reports provide one atomic button snapshot. Releases are processed before new presses, preventing false combinations when one button is replaced by another in the same report. Movement follows that button snapshot.
 - First completed overlapping pair wins. Disjoint pairs can coexist. No triple/quad combinations.
-- A one-shot timer handles the next pending deadline. There is no permanent 200 Hz combo timer. A tolerant 2-second timer checks permission revocation while started.
+- A one-shot timer handles the next pending deadline. There is no permanent 200 Hz combo timer. A tolerant 2-second timer checks permissions/session availability and retries disconnected devices while mappings remain enabled. Manual Pause and Quit cancel it.
 
 ## Build
 
@@ -115,7 +122,9 @@ Tests alone:
 bash tests/run.sh
 ```
 
-## Verified status — October 9, 2026
+## Verified status — October 14, 2026
+
+- Version 0.6.2 builds with warnings treated as errors and passes all existing suites plus native lifecycle regression tests. Coverage includes unplug/replug, transient input errors, repeated notifications, overlapping sleep/lock/session transitions, permission loss/restoration, unavailable session snapshots, stale callbacks, manual Pause, applied-setting preservation, neutral-button rearming, and held-output cleanup. The final app is installed and Active. After refreshing permissions, the author confirmed that USB unplug/replug and screen lock/unlock both restore mappings automatically without clicking Start. Saved mappings and motion/app preferences were verified unchanged.
 
 - Version 0.6.1 builds and passes the existing Rust, C/Rust, and native regression suites. The installed About page shows Jeffrey Liu and version 0.6.1. The live Dock preference switches macOS activation policy between regular and accessory; accessory mode remains active after closing the settings window, and settings reopen successfully. Saved actions and effective motion/startup/menu preferences are preserved. No helper, login item, updater, or network access was added. After refreshing Accessibility and Input Monitoring, the final installed v0.6.1 binary reached Active, confirmed in the UI and by the author.
 
@@ -128,7 +137,7 @@ bash tests/run.sh
 - Version 0.6.0 compilation and ad-hoc signature verification pass. UI checks cover the physical button grid, all six combination cards, manual Option–Space entry, recording Control–Shift–K and Command–W, Escape stopping recording, Cancel restoring the previous shortcut, and choosing ChatGPT in the native application picker. Test mappings were discarded without saving. Saved original mappings and motion values were preserved, with the two disabled diagonal slots appended. The author subsequently reported that the app is working well. Detailed physical combination and shortcut coverage has not been separately confirmed.
 - Previously verified in version 0.5.0: compilation, launch, generated mapping illustrations, numeric entry for all three motion controls, 7.5× scroll entry, out-of-range rejection, corrected-input feedback, preserved mappings/speeds, and missing-permission handling have been checked. Ad-hoc signature verification passes. All eight bundled PNGs retain alpha. Accessibility and Input Monitoring were refreshed for the final binary, automatic capture reached Active, and a final Quit left the native Apple mouse service attached with no SlimBlade Control capture open. The app was reopened and left running on Motion. The feel of higher scroll speeds still needs the user’s preference testing.
 - Accessibility and Input Monitoring approval for the installed app have been verified. The first live capture attempt returned `0xe00002c5` (exclusive access conflict) while other remappers held the device. After Kensington's trackball driver was disabled and Karabiner's SlimBlade Modify events switch was off, **exclusive capture succeeded**. Quitting Kensington's settings app alone did not resolve the conflict.
-- **User-confirmed on the actual trackball:** pointer movement, twist scrolling, lower-left/right clicks, and upper-left/right identification as buttons 3/4. The app reached Active and Start successfully recaptured it. After the native mouse service was restored by reconnecting USB, a full open/capture/Quit cycle left ordinary pointer movement, bottom-button clicks, and twist scrolling working, confirmed by the user. **Physical combination timing, double-click/drag details, unplug/sleep/session recovery, and multi-display behavior still need acceptance testing.** Passing automated tests does not establish these results.
+- **User-confirmed on the actual trackball:** pointer movement, twist scrolling, lower-left/right clicks, and upper-left/right identification as buttons 3/4. The app reached Active and Start successfully recaptured it. After the native mouse service was restored by reconnecting USB, a full open/capture/Quit cycle left ordinary pointer movement, bottom-button clicks, and twist scrolling working, confirmed by the user. **Physical combination timing, double-click/drag details, sleep/wake and fast-user-switch recovery, and multi-display behavior still need acceptance testing.** USB reconnect and screen lock/unlock recovery were subsequently confirmed for v0.6.2. Passing automated tests does not establish these results.
 
 ## Hardware acceptance checklist
 
@@ -138,7 +147,7 @@ bash tests/run.sh
 4. Compare tracking/scroll at 0.5× and 2×. Confirm the trackpad/second mouse remains native; check display edges and transitions.
 5. Test all six combinations in both press orders, quick tap, long hold, late second press, overlapping pairs, and release/repress. A successful combination must emit no individual click.
 6. Assign Option–Space (or another configured shortcut), then test it from a button. Assign an application to a pair; confirm a press opens/focuses it once and a held pair does not repeatedly launch it.
-7. Test Pause, Quit, unplug/replug, sleep/wake, and session switching while idle and while an action is held. Confirm native input returns and no key/button stays held.
+7. Test unplug/replug, sleep/wake, lock/unlock, and session switching while idle and while an action is held. Confirm mappings return automatically without Start and no key/button stays held. Then Pause and repeat these events: mappings must stay paused. Quit must leave native input available.
 8. Check scroll direction/units in the apps you use. Games, raw-HID consumers, login screens, Secure Input, and remote sessions are not verified.
 
 ## Internals and limits
@@ -147,7 +156,9 @@ The independent IOHIDManager discovers only `047d:2041`. The app validates the e
 
 The report callback, Rust engine, timers, and Cocoa state run on the main thread. Rust's event path allocates no heap memory. The C FFI still requires valid aligned pointers, matching layouts, and non-reentrant callbacks. The Objective-C shell is not made memory-safe by using Rust.
 
-Mapped output is posted at the session event tap; physical modifiers are queried from HID system state without a keyboard listener. The app releases held outputs before closing the device on Pause, configuration changes, input error, disconnect, sleep, session deactivation, and normal exit. Revocation is detected periodically, but macOS may already prevent final output delivery once permission is withdrawn. A force-kill/crash cannot run cleanup; use another pointer/key release if the OS retains synthetic state.
+Mapped output is posted at the session event tap; physical modifiers are queried from HID system state without a keyboard listener. The app releases held outputs before closing the device on Pause, configuration changes, input error, disconnect, sleep, session deactivation, and normal exit. Revocation is detected periodically, but macOS may already prevent final output delivery once permission is withdrawn. After a temporary interruption the app retries using the applied configuration; it does not save pending UI edits. Manual Pause clears that intent. A force-kill/crash cannot run cleanup; use another pointer/key release if the OS retains synthetic state.
+
+Sleep/wake and fast-user-switch notifications come from NSWorkspace. Screen lock/unlock uses macOS distributed notifications (`com.apple.screenIsLocked` / `com.apple.screenIsUnlocked`), with the optional `CGSSessionScreenIsLocked` session field as a supplementary check when present. These lock identifiers are not documented AppKit constants and need continued verification on future macOS versions.
 
 Only one wired SlimBlade is supported. Conflicting drivers may prevent exclusive capture or interfere with suppression. Multi-display behavior and interactions with simultaneous physical input need validation. No measured performance or latency advantage is claimed.
 
@@ -157,6 +168,8 @@ Preferences: `org.local.SlimBladeControl`. No event logs, telemetry, firmware ch
 
 - [Apple IOHIDDeviceOpen](https://developer.apple.com/documentation/iokit/1588670-iohiddeviceopen)
 - [Apple IOHIDManager options](https://developer.apple.com/documentation/iokit/iohidmanageroptions)
+- [Apple session reactivation notification](https://developer.apple.com/documentation/AppKit/NSWorkspace/sessionDidBecomeActiveNotification?language=objc)
+- [Chromium’s macOS screen-lock notification handling](https://chromium.googlesource.com/chromium/src/+/377fb3e653c9493d2/ui/base/idle/idle_mac.mm)
 - [Rust static library linkage](https://doc.rust-lang.org/reference/linkage.html)
 
 `tests/reference_chords.c` preserves the earlier four-pair C reference; it is not linked into the app or the current Rust integration tests. The source and icon artwork are MIT licensed.

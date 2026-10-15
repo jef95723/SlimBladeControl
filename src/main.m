@@ -12,6 +12,11 @@
 
 static double now(void) { return NSProcessInfo.processInfo.systemUptime; }
 static const int vendorID=0x047d, productID=0x2041;
+static NSString *const SBScreenLockedNotification=@"com.apple.screenIsLocked";
+static NSString *const SBScreenUnlockedNotification=@"com.apple.screenIsUnlocked";
+typedef NS_OPTIONS(NSUInteger, SBSuspension) {
+    SBSuspensionSleep=1, SBSuspensionSession=2, SBSuspensionLock=4
+};
 
 // Core Graphics supplies both generic and left/right modifier bits for real
 // key events. Our generated modifiers use the left-side virtual keycodes.
@@ -38,7 +43,8 @@ static CGEventFlags syntheticFlags(CGEventFlags flags) {
     IOHIDManagerRef manager;
     IOHIDDeviceRef device;
     CGEventSourceRef source;
-    BOOL running;
+    BOOL running, mappingsEnabled;
+    SBSuspension suspensionReasons;
     double tracking, scrolling;
     uint8_t reportBuffer[64], lastButtons;
     BOOL armed, swapUpper, identify;
@@ -67,13 +73,19 @@ static CGEventFlags syntheticFlags(CGEventFlags flags) {
     NSString *statusBeforeValidation;
     NSWindow *window;
     NSStatusItem *statusItem;
-    NSTimer *timer, *permissionTimer;
+    NSTimer *timer, *connectionTimer;
 }
 - (void)emitSlot:(int)slot down:(BOOL)down;
 - (void)attach:(IOHIDDeviceRef)d;
 - (void)removed:(IOHIDDeviceRef)d;
 - (void)report:(const uint8_t *)bytes length:(CFIndex)length device:(IOHIDDeviceRef)sender;
-- (void)inputFailed;
+- (void)inputFailed:(IOHIDDeviceRef)sender;
+- (void)discovered:(IOHIDDeviceRef)d manager:(IOHIDManagerRef)sender;
+- (void)removed:(IOHIDDeviceRef)d manager:(IOHIDManagerRef)sender;
+- (void)reconcileConnection;
+- (void)stopDiscovery;
+- (void)releaseDevice;
+- (void)closeDevice;
 - (void)scheduleDeadline;
 - (void)moveX:(double)x y:(double)y wheel:(double)w;
 - (void)stop;
@@ -85,15 +97,15 @@ static CGEventFlags syntheticFlags(CGEventFlags flags) {
 
 static void emit(void *ctx,int slot,bool down) { [(__bridge Controller *)ctx emitSlot:slot down:down]; }
 static void added(void *ctx,IOReturn result,void *sender,IOHIDDeviceRef d) {
-    (void)result; (void)sender; [(__bridge Controller *)ctx attach:d];
+    if(result==kIOReturnSuccess) [(__bridge Controller *)ctx discovered:d manager:(IOHIDManagerRef)sender];
 }
 static void removed(void *ctx,IOReturn result,void *sender,IOHIDDeviceRef d) {
-    (void)result; (void)sender; [(__bridge Controller *)ctx removed:d];
+    (void)result; [(__bridge Controller *)ctx removed:d manager:(IOHIDManagerRef)sender];
 }
 static void reportCallback(void *ctx,IOReturn result,void *sender,IOHIDReportType type,uint32_t reportID,uint8_t *bytes,CFIndex length) {
     if(type!=kIOHIDReportTypeInput || reportID!=0) return;
     Controller *controller=(__bridge Controller *)ctx;
-    if(result!=kIOReturnSuccess) { [controller inputFailed]; return; }
+    if(result!=kIOReturnSuccess) { [controller inputFailed:(IOHIDDeviceRef)sender]; return; }
     [controller report:bytes length:length device:(IOHIDDeviceRef)sender];
 }
 // Descriptor read from the attached wired SlimBlade. Refuse unknown layouts
@@ -353,8 +365,16 @@ static CGPoint onScreen(CGPoint p) {
     [self configureMenuBar]; [self updateActivity];
     [window center]; [self show:nil];
     NSNotificationCenter *nc=NSWorkspace.sharedWorkspace.notificationCenter;
-    [nc addObserver:self selector:@selector(sleep:) name:NSWorkspaceWillSleepNotification object:nil];
-    [nc addObserver:self selector:@selector(sleep:) name:NSWorkspaceSessionDidResignActiveNotification object:nil];
+    for(NSString *name in @[NSWorkspaceWillSleepNotification,NSWorkspaceDidWakeNotification,
+        NSWorkspaceSessionDidResignActiveNotification,NSWorkspaceSessionDidBecomeActiveNotification])
+        [nc addObserver:self selector:@selector(sessionChanged:) name:name object:nil];
+    // Lock/unlock are distributed notifications, separate from fast user switching.
+    // These names are not public AppKit constants; the session snapshot also
+    // checks the observed lock flag when present, including after missed events.
+    NSDistributedNotificationCenter *distributed=NSDistributedNotificationCenter.defaultCenter;
+    for(NSString *name in @[SBScreenLockedNotification,SBScreenUnlockedNotification])
+        [distributed addObserver:self selector:@selector(sessionChanged:) name:name object:nil
+            suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
     // Fully initialize output, settings and UI before any exclusive device open.
     [self startAutomaticallyIfEnabled];
 }
@@ -461,13 +481,13 @@ static CGPoint onScreen(CGPoint p) {
 }
 - (void)updateActivity {
     BOOL connected=running && device;
-    stateLabel.stringValue=connected?(identify?@"Identifying":@"Active"):(running?@"Waiting":@"Paused");
+    stateLabel.stringValue=connected?(identify?@"Identifying":@"Active"):(mappingsEnabled?@"Waiting":@"Paused");
     stateLabel.textColor=connected?NSColor.systemRedColor:NSColor.secondaryLabelColor;
     ballIndicator.active=connected;
     statusItem.button.toolTip=[NSString stringWithFormat:@"SlimBlade Control — %@",stateLabel.stringValue?:@"Paused"];
     statusItem.button.accessibilityLabel=statusItem.button.toolTip;
-    applyButton.title=connected?@"Apply changes":@"Start mappings"; pauseButton.enabled=running;
-    menuPause.enabled=running; menuStart.enabled=!running;
+    applyButton.title=mappingsEnabled?@"Apply changes":@"Start mappings"; pauseButton.enabled=mappingsEnabled;
+    menuPause.enabled=mappingsEnabled; menuStart.enabled=!mappingsEnabled;
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app { (void)app; return NO; }
 - (void)show:(id)sender { (void)sender; [NSApp activateIgnoringOtherApps:YES]; [window makeKeyAndOrderFront:nil]; }
@@ -508,44 +528,104 @@ static CGPoint onScreen(CGPoint p) {
     identify=identifyControl.state==NSControlStateValueOn;
     [prefs setBool:swapUpper forKey:@"swapUpper"];
     for(NSUInteger i=0;i<fields.count;i++) fields[i].stringValue=actions[i];
-    BOOL accessibility=AXIsProcessTrusted();
-    BOOL inputMonitoring=IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)==kIOHIDAccessTypeGranted;
+    mappingsEnabled=YES;
+    [self refreshSessionState];
+    __weak Controller *weakSelf=self;
+    connectionTimer=[NSTimer timerWithTimeInterval:2 repeats:YES block:^(NSTimer *t) {
+        (void)t; Controller *controller=weakSelf;
+        [controller refreshSessionState]; [controller reconcileConnection];
+    }];
+    connectionTimer.tolerance=.5;
+    [NSRunLoop.mainRunLoop addTimer:connectionTimer forMode:NSRunLoopCommonModes];
+    [self reconcileConnection];
+}
+- (NSDictionary *)currentSession {
+    return CFBridgingRelease(CGSessionCopyCurrentDictionary());
+}
+- (BOOL)accessibilityGranted { return AXIsProcessTrusted(); }
+- (BOOL)inputMonitoringGranted { return IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)==kIOHIDAccessTypeGranted; }
+- (void)refreshSessionState {
+    NSDictionary *session=[self currentSession];
+    BOOL active=[session[(__bridge NSString *)kCGSessionOnConsoleKey] boolValue] &&
+        [session[(__bridge NSString *)kCGSessionLoginDoneKey] boolValue];
+    if(active) suspensionReasons &= ~SBSuspensionSession; else suspensionReasons |= SBSuspensionSession;
+    // This optional key is not a public API guarantee. Notifications remain the
+    // fallback when macOS omits it. Never infer unlocked from a missing key.
+    NSNumber *locked=session[@"CGSSessionScreenIsLocked"];
+    if(locked) {
+        if(locked.boolValue) suspensionReasons |= SBSuspensionLock;
+        else suspensionReasons &= ~SBSuspensionLock;
+    }
+}
+- (void)sessionChanged:(NSNotification *)notification {
+    if(!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self sessionChanged:notification]; }); return;
+    }
+    NSString *name=notification.name;
+    if([name isEqual:NSWorkspaceWillSleepNotification]) suspensionReasons |= SBSuspensionSleep;
+    else if([name isEqual:NSWorkspaceDidWakeNotification]) suspensionReasons &= ~SBSuspensionSleep;
+    else if([name isEqual:NSWorkspaceSessionDidResignActiveNotification]) suspensionReasons |= SBSuspensionSession;
+    else if([name isEqual:NSWorkspaceSessionDidBecomeActiveNotification]) suspensionReasons &= ~SBSuspensionSession;
+    else if([name isEqual:SBScreenLockedNotification]) suspensionReasons |= SBSuspensionLock;
+    else if([name isEqual:SBScreenUnlockedNotification]) suspensionReasons &= ~SBSuspensionLock;
+    else return;
+    [self reconcileConnection];
+}
+- (void)reconcileConnection {
+    if(!mappingsEnabled) return;
+    if(suspensionReasons) {
+        [self stopDiscovery];
+        status.stringValue=@"Mappings will resume automatically after wake or unlock."; return;
+    }
+    BOOL accessibility=[self accessibilityGranted], inputMonitoring=[self inputMonitoringGranted];
     if(!accessibility || !inputMonitoring) {
+        [self stopDiscovery];
         status.stringValue=[NSString stringWithFormat:@"Settings saved. Accessibility: %@ · Input Monitoring: %@. Re-add the app in Settings if an enabled entry belongs to an older build.",accessibility?@"granted":@"needed",inputMonitoring?@"granted":@"needed"]; return;
     }
-    if(!source) { status.stringValue=@"Could not create the event source. Relaunch the app."; return; }
-    running=YES; [self updateActivity];
+    if(!source) { [self stop]; status.stringValue=@"Could not create the event source. Relaunch the app."; return; }
+    // Resume the applied snapshot; never read or save unfinished UI edits here.
+    if(!running) [self beginDiscovery];
+    if(running && !device) [self connectAvailableDevice];
+    [self updateActivity];
+}
+- (void)beginDiscovery {
     manager=IOHIDManagerCreate(kCFAllocatorDefault,kIOHIDManagerOptionIndependentDevices);
-    if(!manager) { running=NO; [self updateActivity]; status.stringValue=@"Could not create device manager."; return; }
+    if(!manager) { status.stringValue=@"Device discovery unavailable. Retrying automatically…"; return; }
     NSDictionary *match=@{@kIOHIDVendorIDKey:@(vendorID),@kIOHIDProductIDKey:@(productID)};
     IOHIDManagerSetDeviceMatching(manager,(__bridge CFDictionaryRef)match);
     IOHIDManagerRegisterDeviceMatchingCallback(manager,added,(__bridge void *)self);
     IOHIDManagerRegisterDeviceRemovalCallback(manager,removed,(__bridge void *)self);
     IOHIDManagerScheduleWithRunLoop(manager,CFRunLoopGetMain(),kCFRunLoopCommonModes);
-    // Independent devices: discovery never implicitly opens or schedules them.
-    IOReturn managerResult=IOHIDManagerOpen(manager,kIOHIDOptionsTypeNone);
-    if(managerResult!=kIOReturnSuccess) { [self stop]; status.stringValue=@"Device discovery failed. Check Input Monitoring and relaunch."; return; }
-    status.stringValue=@"Waiting for wired SlimBlade 047d:2041…";
-    CFSetRef current=IOHIDManagerCopyDevices(manager);
+    // Independent discovery does not implicitly open the device.
+    IOReturn result=IOHIDManagerOpen(manager,kIOHIDOptionsTypeNone);
+    if(result!=kIOReturnSuccess) {
+        [self stopDiscovery]; status.stringValue=@"Device discovery unavailable. Retrying automatically…"; return;
+    }
+    running=YES;
+    status.stringValue=@"Waiting for wired SlimBlade 047d:2041 · reconnect to resume automatically.";
+}
+- (void)connectAvailableDevice {
+    CFSetRef current=manager?IOHIDManagerCopyDevices(manager):NULL;
     if(current) {
         for(id candidate in (__bridge NSSet *)current) [self attach:(__bridge IOHIDDeviceRef)candidate];
         CFRelease(current);
     }
-    permissionTimer=[NSTimer timerWithTimeInterval:2 repeats:YES block:^(NSTimer *t) {
-        (void)t;
-        if(!AXIsProcessTrusted() || IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)!=kIOHIDAccessTypeGranted) {
-            [self stop]; self->status.stringValue=@"Paused because input permissions changed. Restore permissions, then click Start.";
-        }
-    }];
-    permissionTimer.tolerance=.5;
-    [NSRunLoop.mainRunLoop addTimer:permissionTimer forMode:NSRunLoopCommonModes];
+}
+- (void)discovered:(IOHIDDeviceRef)d manager:(IOHIDManagerRef)sender {
+    if(sender && sender==manager) [self attach:d];
+}
+- (void)removed:(IOHIDDeviceRef)d manager:(IOHIDManagerRef)sender {
+    if(sender && sender==manager) [self removed:d];
 }
 - (void)attach:(IOHIDDeviceRef)d {
-    if(!running || device) return;
+    if(!mappingsEnabled || !running || device || suspensionReasons) return;
+    // Device arrival can race the queued session notifications.
+    [self refreshSessionState];
+    if(suspensionReasons) return;
     if(!supportedDescriptor(d)) { status.stringValue=@"This SlimBlade report layout is unsupported. Device left in native mode."; return; }
-    IOReturn rc=IOHIDDeviceOpen(d,kIOHIDOptionsTypeSeizeDevice);
-    if(rc!=kIOReturnSuccess) {
-        status.stringValue=[NSString stringWithFormat:@"Capture failed (0x%08x). Pause Kensington / other mouse drivers, then try Start again.",rc]; return;
+    IOReturn result=IOHIDDeviceOpen(d,kIOHIDOptionsTypeSeizeDevice);
+    if(result!=kIOReturnSuccess) {
+        status.stringValue=[NSString stringWithFormat:@"Waiting to capture SlimBlade (0x%08x). Release other mouse drivers; retrying automatically.",result]; return;
     }
     device=(IOHIDDeviceRef)CFRetain(d); armed=NO; lastButtons=0;
     IOHIDDeviceRegisterInputReportCallback(device,reportBuffer,sizeof(reportBuffer),reportCallback,(__bridge void *)self);
@@ -564,37 +644,56 @@ static CGPoint onScreen(CGPoint p) {
 }
 
 - (void)removed:(IOHIDDeviceRef)d {
-    if(d!=device) return;
-    [self stop]; status.stringValue=@"SlimBlade disconnected. Reconnect, then click Start.";
+    if(!d || d!=device) return;
+    [self releaseDevice];
+    status.stringValue=@"SlimBlade disconnected · reconnect to resume automatically.";
 }
-- (void)stop {
-    running=NO; [timer invalidate]; timer=nil;
-    [permissionTimer invalidate]; permissionTimer=nil; sb_reset(&chords);
+- (void)releaseDevice {
+    [timer invalidate]; timer=nil; sb_reset(&chords);
     [outputs removeAllObjects]; [self syncModifiers];
     [clickTimes removeAllObjects]; [clickCounts removeAllObjects];
     [clickPoints removeAllObjects]; [pressCounts removeAllObjects];
     motion=(SBMotion){0}; armed=NO; lastButtons=0;
-    [self updateActivity];
+    [self closeDevice]; [self updateActivity];
+}
+- (void)closeDevice {
     if(device) {
-        IOHIDDeviceRegisterInputReportCallback(device,reportBuffer,sizeof(reportBuffer),NULL,NULL);
-        IOHIDDeviceUnscheduleFromRunLoop(device,CFRunLoopGetMain(),kCFRunLoopCommonModes);
-        IOHIDDeviceClose(device,kIOHIDOptionsTypeNone); CFRelease(device); device=NULL;
-    }
-    if(manager) {
-        IOHIDManagerUnscheduleFromRunLoop(manager,CFRunLoopGetMain(),kCFRunLoopCommonModes);
-        IOHIDManagerClose(manager,kIOHIDOptionsTypeNone); CFRelease(manager); manager=NULL;
+        IOHIDDeviceRef closing=device; device=NULL;
+        IOHIDDeviceRegisterInputReportCallback(closing,reportBuffer,sizeof(reportBuffer),NULL,NULL);
+        IOHIDDeviceUnscheduleFromRunLoop(closing,CFRunLoopGetMain(),kCFRunLoopCommonModes);
+        IOHIDDeviceClose(closing,kIOHIDOptionsTypeNone); CFRelease(closing);
     }
 }
+- (void)stopDiscovery {
+    running=NO; [self releaseDevice];
+    if(manager) {
+        IOHIDManagerRef closing=manager; manager=NULL;
+        IOHIDManagerRegisterDeviceMatchingCallback(closing,NULL,NULL);
+        IOHIDManagerRegisterDeviceRemovalCallback(closing,NULL,NULL);
+        IOHIDManagerUnscheduleFromRunLoop(closing,CFRunLoopGetMain(),kCFRunLoopCommonModes);
+        IOHIDManagerClose(closing,kIOHIDOptionsTypeNone); CFRelease(closing);
+    }
+}
+- (void)stop {
+    mappingsEnabled=NO; [connectionTimer invalidate]; connectionTimer=nil;
+    [self stopDiscovery];
+}
 - (void)pause:(id)sender { (void)sender; [self stop]; status.stringValue=@"Paused · trackball released. Start mappings to resume."; }
-- (void)sleep:(NSNotification *)n { (void)n; [self pause:nil]; }
-- (void)applicationWillTerminate:(NSNotification *)n { (void)n; [shortcutEditor cancel:nil]; [self stop]; if(source) CFRelease(source); }
-- (void)inputFailed {
-    [self stop]; status.stringValue=@"Paused after a device input error. Reconnect the trackball and click Start.";
+- (void)applicationWillTerminate:(NSNotification *)n {
+    (void)n; [shortcutEditor cancel:nil]; [self stop];
+    [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];
+    [NSDistributedNotificationCenter.defaultCenter removeObserver:self];
+    if(source) CFRelease(source);
+}
+- (void)inputFailed:(IOHIDDeviceRef)sender {
+    if(!sender || sender!=device) return;
+    [self releaseDevice];
+    status.stringValue=@"Device input interrupted · reconnecting automatically…";
 }
 - (void)report:(const uint8_t *)bytes length:(CFIndex)length device:(IOHIDDeviceRef)sender {
     if(!running || !device || sender!=device) return;
     SBReport report;
-    if(length<0 || !sb_decode_report(bytes,(size_t)length,swapUpper,&report)) { [self inputFailed]; return; }
+    if(length<0 || !sb_decode_report(bytes,(size_t)length,swapUpper,&report)) { [self inputFailed:sender]; return; }
     if(!armed) {
         if(report.buttons==0) {
             armed=YES;

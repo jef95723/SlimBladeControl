@@ -28,8 +28,26 @@
 @implementation LaunchRecorder
 - (void)start:(id)sender { (void)sender; self.starts++; }
 @end
-static Recorder *make(NSArray *mappings) {
-    Recorder *c=[Recorder new]; c.recorded=[NSMutableArray new];
+// Replace only OS discovery/close and permission/session queries. Production
+// reconnect decisions, output cleanup, notification routing, and arming run.
+@interface LifecycleRecorder : Recorder
+@property BOOL allowed, available;
+@property NSUInteger discoveries, attempts;
+@property NSDictionary *session;
+@end
+@implementation LifecycleRecorder
+- (BOOL)accessibilityGranted { return self.allowed; }
+- (BOOL)inputMonitoringGranted { return self.allowed; }
+- (NSDictionary *)currentSession { return self.session; }
+- (void)beginDiscovery { self.discoveries++; running=YES; }
+- (void)connectAvailableDevice {
+    self.attempts++;
+    if(self.available) { device=(IOHIDDeviceRef)(uintptr_t)1; armed=NO; lastButtons=0; }
+}
+- (void)closeDevice { device=NULL; }
+@end
+static Recorder *makeWithClass(Class type, NSArray *mappings) {
+    Recorder *c=[type new]; c.recorded=[NSMutableArray new];
     c.openedURLs=[NSMutableArray new];
     c->outputs=[NSMutableDictionary new]; c->clickCounts=[NSMutableDictionary new];
     c->clickTimes=[NSMutableDictionary new]; c->clickPoints=[NSMutableDictionary new];
@@ -40,6 +58,7 @@ static Recorder *make(NSArray *mappings) {
     sb_init(&c->chords,emit,(__bridge void *)c);
     return c;
 }
+static Recorder *make(NSArray *mappings) { return makeWithClass(Recorder.class,mappings); }
 static void finish(Recorder *c) { [c stop]; if(c->source) CFRelease(c->source); c->source=NULL; }
 int main(void) {
     @autoreleasepool {
@@ -127,6 +146,74 @@ int main(void) {
         sb_buttons(&c->chords,9,.1); sb_reset(&c->chords);
         assert(c.openedURLs.count==2 && c.recorded.count==0); finish(c);
 
+        // Temporary transport/session loss keeps intent, releases held output,
+        // and reuses the applied snapshot rather than unfinished settings.
+        LifecycleRecorder *life=(LifecycleRecorder *)makeWithClass(LifecycleRecorder.class,optionSpace);
+        life.allowed=YES; life.available=YES;
+        life.session=@{(__bridge NSString *)kCGSessionOnConsoleKey:@YES,
+            (__bridge NSString *)kCGSessionLoginDoneKey:@YES,@"CGSSessionScreenIsLocked":@NO};
+        life->mappingsEnabled=YES;
+        life->fields=@[[NSTextField textFieldWithString:@"unfinished UI edit"]];
+        [life refreshSessionState]; [life reconcileConnection];
+        assert(life->running && life->device && life.discoveries==1 && life.attempts==1);
+        [life reconcileConnection]; assert(life.discoveries==1 && life.attempts==1);
+        sb_buttons(&life->chords,1,0); assert(life.recorded.count==2);
+        life->armed=YES; life->lastButtons=1; life->motion=(SBMotion){.4,.5,.6};
+        life.available=NO; [life removed:life->device];
+        assert(life->mappingsEnabled && life->running && !life->device && !life->armed);
+        assert(life.recorded.count==4 && life->syntheticModifiers==0 && life->outputs.count==0);
+        assert(life->motion.x==0 && life->motion.y==0 && life->motion.scroll==0 && life->lastButtons==0);
+        [life reconcileConnection]; assert(!life->device && life.discoveries==1);
+        life.available=YES; [life reconcileConnection]; assert(life->device && life.discoveries==1);
+        assert(life->actions==optionSpace && [life->fields[0].stringValue isEqual:@"unfinished UI edit"]);
+        // A button held through reconnect cannot fire until a neutral report.
+        [life.recorded removeAllObjects];
+        [life report:held length:5 device:life->device]; assert(!life->armed && life.recorded.count==0);
+        [life report:neutral length:5 device:life->device]; assert(life->armed);
+        [life report:held length:5 device:life->device]; assert(life.recorded.count==2);
+        // Late callbacks from a retired device or manager cannot drop capture.
+        [life inputFailed:(IOHIDDeviceRef)(uintptr_t)2];
+        [life removed:(IOHIDDeviceRef)(uintptr_t)2];
+        [life removed:life->device manager:(IOHIDManagerRef)(uintptr_t)2];
+        assert(life->device && life.recorded.count==2);
+        [life inputFailed:life->device]; assert(!life->device && life.recorded.count==4);
+        [life reconcileConnection]; assert(life->device);
+        // Lock + sleep + user switch overlap; clearing one must not resume early.
+        for(NSString *name in @[SBScreenLockedNotification,NSWorkspaceWillSleepNotification,NSWorkspaceSessionDidResignActiveNotification])
+            [life sessionChanged:[NSNotification notificationWithName:name object:nil]];
+        assert(life->mappingsEnabled && !life->running && !life->device);
+        NSUInteger beforeResume=life.discoveries;
+        [life sessionChanged:[NSNotification notificationWithName:NSWorkspaceDidWakeNotification object:nil]];
+        [life sessionChanged:[NSNotification notificationWithName:SBScreenUnlockedNotification object:nil]];
+        assert(life.discoveries==beforeResume && !life->device);
+        [life sessionChanged:[NSNotification notificationWithName:NSWorkspaceSessionDidBecomeActiveNotification object:nil]];
+        assert(life.discoveries==beforeResume+1 && life->device && !life->armed);
+        [life sessionChanged:[NSNotification notificationWithName:NSWorkspaceSessionDidBecomeActiveNotification object:nil]];
+        assert(life.discoveries==beforeResume+1);
+        // Permission loss releases capture and recovers only if intent remains.
+        life.allowed=NO; [life reconcileConnection]; assert(!life->device && life->mappingsEnabled);
+        life.allowed=YES; [life reconcileConnection]; assert(life->device);
+        // Snapshot polling covers startup while locked and missed unlock events.
+        life.session=@{(__bridge NSString *)kCGSessionOnConsoleKey:@YES,
+            (__bridge NSString *)kCGSessionLoginDoneKey:@YES,@"CGSSessionScreenIsLocked":@YES};
+        [life refreshSessionState]; [life reconcileConnection]; assert(!life->device);
+        life.session=@{(__bridge NSString *)kCGSessionOnConsoleKey:@YES,
+            (__bridge NSString *)kCGSessionLoginDoneKey:@YES,@"CGSSessionScreenIsLocked":@NO};
+        [life refreshSessionState]; [life reconcileConnection]; assert(life->device);
+        life.session=nil; [life refreshSessionState]; [life reconcileConnection]; assert(!life->device);
+        life.session=@{(__bridge NSString *)kCGSessionOnConsoleKey:@YES,(__bridge NSString *)kCGSessionLoginDoneKey:@YES};
+        [life refreshSessionState]; [life reconcileConnection]; assert(life->device);
+        [life sessionChanged:[NSNotification notificationWithName:SBScreenLockedNotification object:nil]];
+        [life refreshSessionState]; [life reconcileConnection]; assert(!life->device); // missing lock key is not unlocked
+        [life pause:nil]; beforeResume=life.discoveries;
+        assert(!life->mappingsEnabled && !life->connectionTimer && !life->device);
+        for(NSString *name in @[SBScreenUnlockedNotification,NSWorkspaceDidWakeNotification,NSWorkspaceSessionDidBecomeActiveNotification])
+            [life sessionChanged:[NSNotification notificationWithName:name object:nil]];
+        [life refreshSessionState]; [life reconcileConnection];
+        [life discovered:(IOHIDDeviceRef)(uintptr_t)1 manager:(IOHIDManagerRef)(uintptr_t)2];
+        assert(life.discoveries==beforeResume && !life->device && !life->running);
+        finish(life);
+
         // Launch starts saved mappings only when enabled. Closing the settings
         // window must never terminate the background input controller.
         LaunchRecorder *launch=[LaunchRecorder new];
@@ -160,6 +247,6 @@ int main(void) {
         [launch updateActivity]; assert(launch->ballIndicator.active);
         launch->device=NULL; launch->running=NO;
         [launch updateActivity]; assert(!launch->ballIndicator.active);
-        puts("Native tests passed: action validation, saved mapping migration, custom shortcuts, application actions, shared output ownership, modifier release, stop cleanup, startup arming, duplicate reports, automatic launch, window-close policy, numeric input, connection indicator.");
+        puts("Native tests passed: action validation, saved mapping migration, custom shortcuts, application actions, reconnect/session recovery, manual-pause preservation, shared output ownership, modifier release, stop cleanup, startup arming, duplicate reports, automatic launch, window-close policy, numeric input, connection indicator.");
     }
 }
